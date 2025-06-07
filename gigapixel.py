@@ -22,7 +22,7 @@ class GigapixelStandardSettings: # Renamed from GigapixelUpscaleSettings
                 'enabled': (['true', 'false'], {'default': 'true'}),
                 'sharpen': ('FLOAT', {'default': 50, 'min': 0, 'max': 100, 'step': 1, 'display': 'Sharpen Strength (0-100)'}), # Default changed for example
                 'denoise': ('FLOAT', {'default': 50, 'min': 0, 'max': 100, 'step': 1, 'display': 'Denoise Strength (0-100)'}), # Default changed for example
-                'compression': ('FLOAT', {'default': 90, 'min': 0, 'max': 100, 'step': 1, 'display': 'Output JPEG Compression (0-100)'}), # Default changed for example, assuming this is for JPEG output
+                'compression': ('FLOAT', {'default': 90, 'min': 0, 'max': 100, 'step': 1, 'display': 'Model Compression (--cm) (0-100)'}), # Default changed for example, assuming this is for JPEG output
                 # Corrected 'fr' to 'face_recovery_strength'
                 'face_recovery_strength': ('FLOAT', {'default': 0, 'min': 0, 'max': 100, 'step': 1, 'display': 'Face Recovery Strength (0-100)'}),
             },
@@ -197,18 +197,10 @@ class GigapixelAI:
                       recovery_settings: Optional[GigapixelRecoverySettings]=None,
                       redefine_settings: Optional[GigapixelRedefineSettings]=None):
 
-        if not gigapixel_exe or not os.path.exists(gigapixel_exe):
-             # This part needs to be robust. If JS provides a default, ComfyUI might pass it even if empty in UI.
-             # A more robust check or relying on JS to always fill it if empty might be needed.
-             # For now, strict check:
-            if not gigapixel_exe: # Check if it's an empty string
-                # Attempt to get from ComfyUI settings if available (conceptual)
-                # This would require ComfyUI to expose a way to get settings from Python
-                # For now, we'll rely on the input being explicitly set or handled by the JS fallback.
-                # If it reaches here as empty string, and JS didn't fill it, it's an issue.
-                pass # Let it proceed, hoping JS filled it or user provided it.
-            elif not os.path.exists(gigapixel_exe): # Path provided but invalid
-                raise ValueError(f'Gigapixel AI executable path invalid: {gigapixel_exe}')
+        if not gigapixel_exe: # Catches None or empty string
+            raise ValueError('Gigapixel AI executable path not provided. Please ensure it is set in the node or ComfyUI settings.')
+        if not os.path.exists(gigapixel_exe):
+            raise ValueError(f'Gigapixel AI executable path invalid: {gigapixel_exe}')
 
 
         os.makedirs(self.output_dir, exist_ok=True)
@@ -331,14 +323,14 @@ class GigapixelAI:
                 gigapixel_args.extend(['--mv', '2'])
                 active_params['mv'] = 2
 
-            if std_settings.denoise >= 0: # Assuming 0 is a valid value (or means 'off')
+            if std_settings.denoise >= 1:
                 gigapixel_args.extend(['--dn', str(std_settings.denoise)])
                 active_params['denoise'] = std_settings.denoise
-            if std_settings.sharpen >= 0:
+            if std_settings.sharpen >= 1:
                 gigapixel_args.extend(['--sh', str(std_settings.sharpen)])
                 active_params['sharpen'] = std_settings.sharpen
             # Model compression --cm
-            if std_settings.compression >= 0:
+            if std_settings.compression >= 1:
                 gigapixel_args.extend(['--cm', str(std_settings.compression)])
                 active_params['compression'] = std_settings.compression
             if std_settings.face_recovery_strength >= 1: # CLI doc says 1-100 for --fr

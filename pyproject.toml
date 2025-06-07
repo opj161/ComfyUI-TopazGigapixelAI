@@ -1,7 +1,7 @@
 [project]
 name = "gigapixelai"
 description = "Custom nodes use gigapixelai in comfyui."
-version = "1.0.0"
+version = "1.1.0"
 license = {file = "LICENSE"}
 
 [project.urls]
