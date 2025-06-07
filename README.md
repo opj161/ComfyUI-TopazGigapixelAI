@@ -70,4 +70,65 @@ This is the primary node used to perform the upscaling. It takes an image, scali
 
 ## Usage Example
 
+This image shows a general workflow. For specific generative model workflows, see the section below.
+
 ![image](https://github.com/user-attachments/assets/9e6d808a-b6ee-48dd-8541-9d046d0ade7b)
+
+## Using Generative Models (Recovery & Redefine)
+
+When using the "Recovery" or "Redefine" models, the `GigapixelStandardSettings` node is generally not needed, or its parameters (like sharpen, denoise) will be ignored by Gigapixel AI in favor of the specific settings provided by `GigapixelRecoverySettings` or `GigapixelRedefineSettings`.
+
+### Recovery Model Workflow
+
+**Goal:** Upscale an image using the "Recovery" model to restore details.
+
+**Nodes Needed:**
+*   `Load Image` (or any image source)
+*   `GigapixelModelSelection`
+*   `GigapixelRecoverySettings`
+*   `GigapixelAI`
+*   `Save Image` (or any image display/output node)
+
+**Connections:**
+1.  **Load Image** `IMAGE` output → `GigapixelAI` node's `images` input.
+2.  **GigapixelModelSelection** `model_selection` output → `GigapixelAI` node's `model_selection` input.
+    *   In `GigapixelModelSelection`, choose `"Recovery"` from the `model` dropdown.
+3.  **GigapixelRecoverySettings** `recovery_settings` output → `GigapixelAI` node's `recovery_settings` input.
+    *   Adjust parameters on the `GigapixelRecoverySettings` node as needed:
+        *   `model_version`: Typically 2.
+        *   `detail`: (1-100) - e.g., 50.
+        *   `face_recovery_version`: e.g., 2.
+        *   `face_recovery_creativity`: e.g., 0.
+4.  **GigapixelAI** `IMAGE` output → `Save Image` node's `images` input.
+5.  Set the desired `scale` factor on the `GigapixelAI` node.
+6.  Ensure the `gigapixel_exe` path is correctly set on the `GigapixelAI` node.
+
+**Note:** The `GigapixelStandardSettings` node can be disconnected or its `enabled` field set to `false`, as its settings are generally overridden by the Recovery model's specific controls.
+
+### Redefine Model Workflow
+
+**Goal:** Upscale an image using the "Redefine" model for generative adjustments and creative upscaling.
+
+**Nodes Needed:**
+*   `Load Image` (or any image source)
+*   `GigapixelModelSelection`
+*   `GigapixelRedefineSettings`
+*   `GigapixelAI`
+*   `Save Image` (or any image display/output node)
+
+**Connections:**
+1.  **Load Image** `IMAGE` output → `GigapixelAI` node's `images` input.
+2.  **GigapixelModelSelection** `model_selection` output → `GigapixelAI` node's `model_selection` input.
+    *   In `GigapixelModelSelection`, choose `"Redefine"` from the `model` dropdown.
+3.  **GigapixelRedefineSettings** `redefine_settings` output → `GigapixelAI` node's `redefine_settings` input.
+    *   Adjust parameters on the `GigapixelRedefineSettings` node as needed:
+        *   `creativity`: (1-6) - e.g., 3.
+        *   `texture`: (1-6) - e.g., 3.
+        *   `prompt`: Enter your desired text prompt (e.g., "photorealistic, sharp details").
+        *   `denoise`: (1-6) for Redefine model.
+        *   `sharpen`: (1-6) for Redefine model.
+4.  **GigapixelAI** `IMAGE` output → `Save Image` node's `images` input.
+5.  Set the desired `scale` factor on the `GigapixelAI` node.
+6.  Ensure the `gigapixel_exe` path is correctly set on the `GigapixelAI` node.
+
+**Note:** The `GigapixelStandardSettings` node can be disconnected or its `enabled` field set to `false`, as its settings are generally overridden by the Redefine model's specific controls.
