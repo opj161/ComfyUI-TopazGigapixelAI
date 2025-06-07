@@ -275,8 +275,7 @@ class GigapixelAI:
             gigapixel_exe,
             '-i', img_file_path,
             '-o', target_output_dir,
-            '--scale', str(scale),
-            '--overwrite'
+            '--scale', str(scale)
         ]
         
         active_params = {'scale': scale}
