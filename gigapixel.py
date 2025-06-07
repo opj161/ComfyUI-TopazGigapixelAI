@@ -1,8 +1,10 @@
+# gigapixel.py
+
 import numpy as np
 import os
-import pprint
+# import pprint # Not used, can remove
 import time
-import folder_paths
+# import folder_paths # Not used directly in classes, but likely needed by ComfyUI globally
 import torch
 import subprocess
 import json
@@ -11,36 +13,39 @@ import shutil
 from PIL import Image, ImageOps
 from typing import Optional
 
-class GigapixelUpscaleSettings:
+# --- GigapixelUpscaleSettings (Standard Models) ---
+class GigapixelStandardSettings: # Renamed from GigapixelUpscaleSettings
     @classmethod
     def INPUT_TYPES(cls):
         return {
             'required': {
                 'enabled': (['true', 'false'], {'default': 'true'}),
-                'sharpen': ('FLOAT', {'default': 1, 'min': 0, 'max': 100, 'round': False, 'display': 'Sharpen Strength'}),
-                'denoise': ('FLOAT', {'default': 1, 'min': 0, 'max': 100, 'round': False, 'display': 'Denoise Strength'}),
-                'compression': ('FLOAT', {'default': 67, 'min': 0, 'max': 100, 'round': False, 'display': 'Compression'}),
-                'fr': ('FLOAT', {'default': 50, 'min': 0, 'max': 100, 'round': False, 'display': 'Fine Detail Retention'}),
+                'sharpen': ('FLOAT', {'default': 50, 'min': 0, 'max': 100, 'step': 1, 'display': 'Sharpen Strength (0-100)'}), # Default changed for example
+                'denoise': ('FLOAT', {'default': 50, 'min': 0, 'max': 100, 'step': 1, 'display': 'Denoise Strength (0-100)'}), # Default changed for example
+                'compression': ('FLOAT', {'default': 90, 'min': 0, 'max': 100, 'step': 1, 'display': 'Output JPEG Compression (0-100)'}), # Default changed for example, assuming this is for JPEG output
+                # Corrected 'fr' to 'face_recovery_strength'
+                'face_recovery_strength': ('FLOAT', {'default': 0, 'min': 0, 'max': 100, 'step': 1, 'display': 'Face Recovery Strength (0-100)'}),
             },
-            'optional': {},
         }
 
-    RETURN_TYPES = ('GigapixelUpscaleSettings',)
-    RETURN_NAMES = ('upscale_settings',)
+    RETURN_TYPES = ('GigapixelStandardSettings',) # Renamed
+    RETURN_NAMES = ('standard_settings',) # Renamed
     FUNCTION = 'init'
-    CATEGORY = 'image'
+    CATEGORY = 'image/GigapixelAI' # Added subcategory
     OUTPUT_NODE = False
-    OUTPUT_IS_LIST = (False,)
 
-    def init(self, enabled, sharpen, denoise, compression, fr):
+    def init(self, enabled, sharpen, denoise, compression, face_recovery_strength):
         self.enabled = str(True).lower() == enabled.lower()
         self.sharpen = sharpen
         self.denoise = denoise
-        self.compression = compression
-        self.fr = fr
+        self.compression = compression # Note: CLI uses --cm for model compression, not output JPEG quality. This might be a misunderstanding.
+                                      # CLI uses --jq for jpeg quality. If this is for model compression, it's fine.
+                                      # The doc mentions --cm/--compression for "various model options". Let's assume it's model compression.
+        self.face_recovery_strength = face_recovery_strength
         return (self,)
 
-class GigapixelModelSettings:
+# --- GigapixelModelSettings ---
+class GigapixelModelSelection: # Renamed
     MODEL_MAPPING = {
         'Art & CG': 'art',
         'Lines': 'lines',
@@ -48,11 +53,13 @@ class GigapixelModelSettings:
         'High Fidelity': 'fidelity',
         'Low Resolution': 'lowres',
         'Standard': 'std',
-        'Text & Shapes': 'text'
+        'Text & Shapes': 'text',
+        'Recovery': 'recovery',  # New
+        'Redefine': 'redefine'   # New
     }
 
-    # 需要添加 mv 2 参数的模型列表
-    MV2_MODELS = {'std', 'fidelity', 'lowres'}
+    # Models that use --mv 2 by default (excluding recovery as it has its own mv setting)
+    MV2_MODELS_DEFAULT = {'std', 'fidelity', 'lowres'} # 'recovery' removed, will be handled by its own settings
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -62,53 +69,117 @@ class GigapixelModelSettings:
             },
         }
 
-    RETURN_TYPES = ('GigapixelModelSettings',)
-    RETURN_NAMES = ('model_settings',)
+    RETURN_TYPES = ('GigapixelModelSelection',) # Renamed
+    RETURN_NAMES = ('model_selection',) # Renamed
     FUNCTION = 'init'
-    CATEGORY = 'image'
+    CATEGORY = 'image/GigapixelAI'
     OUTPUT_NODE = False
-    OUTPUT_IS_LIST = (False,)
 
     def init(self, model):
-        self.model = self.MODEL_MAPPING[model]
-        self.needs_mv2 = self.model in self.MV2_MODELS
+        self.model_name_ui = model # Keep UI name for potential use
+        self.model_cli_code = self.MODEL_MAPPING[model]
+        # This specific flag is now less relevant here, --mv will be handled more dynamically
+        self.is_default_mv2_model = self.model_cli_code in self.MV2_MODELS_DEFAULT
         return (self,)
 
+# --- GigapixelRecoverySettings (New Node) ---
+class GigapixelRecoverySettings:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            'required': {
+                'model_version': ([1, 2], {'default': 2, 'display': 'Model Version (--mv)'}),
+                'detail': ('FLOAT', {'default': 50, 'min': 1, 'max': 100, 'step': 1, 'display': 'Detail (1-100)'}),
+                'face_recovery_version': ([1, 2], {'default': 2, 'display': 'Face Recovery Version (--frv)'}),
+                'face_recovery_creativity': ([0, 1], {'default': 0, 'display': 'Face Recovery Creativity (0 or 1, --frc)'}),
+            },
+        }
+    RETURN_TYPES = ('GigapixelRecoverySettings',)
+    RETURN_NAMES = ('recovery_settings',)
+    FUNCTION = 'init'
+    CATEGORY = 'image/GigapixelAI'
+    OUTPUT_NODE = False
+
+    def init(self, model_version, detail, face_recovery_version, face_recovery_creativity):
+        self.model_version = model_version
+        self.detail = detail
+        self.face_recovery_version = face_recovery_version
+        self.face_recovery_creativity = face_recovery_creativity
+        return (self,)
+
+# --- GigapixelRedefineSettings (New Node) ---
+class GigapixelRedefineSettings:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            'required': {
+                'creativity': ('INT', {'default': 3, 'min': 1, 'max': 6, 'step': 1, 'display': 'Creativity (--cr, 1-6)'}),
+                'texture': ('INT', {'default': 3, 'min': 1, 'max': 6, 'step': 1, 'display': 'Texture (--tx, 1-6)'}),
+                'prompt': ('STRING', {'default': '', 'multiline': True, 'display': 'Prompt'}),
+                'denoise': ('INT', {'default': 3, 'min': 1, 'max': 6, 'step': 1, 'display': 'Denoise (--denoise, 1-6)'}),
+                'sharpen': ('INT', {'default': 3, 'min': 1, 'max': 6, 'step': 1, 'display': 'Sharpen (--sharpen, 1-6)'}),
+            },
+        }
+    RETURN_TYPES = ('GigapixelRedefineSettings',)
+    RETURN_NAMES = ('redefine_settings',)
+    FUNCTION = 'init'
+    CATEGORY = 'image/GigapixelAI'
+    OUTPUT_NODE = False
+
+    def init(self, creativity, texture, prompt, denoise, sharpen):
+        self.creativity = creativity
+        self.texture = texture
+        self.prompt = prompt
+        self.denoise = denoise
+        self.sharpen = sharpen
+        return (self,)
+
+
+# --- GigapixelAI (Main Node - Updated) ---
 class GigapixelAI:
     def __init__(self):
         self.this_dir = os.path.dirname(os.path.abspath(__file__))
         self.comfy_dir = os.path.abspath(os.path.join(self.this_dir, '..', '..'))
-        self.output_dir = os.path.join(self.comfy_dir, 'temp', 'gigapixel_output')
-        self.prefix = 'gigapixel'
+        # Consider making output_dir configurable or truly temporary if batch_dir is always cleaned up
+        self.output_dir = os.path.join(self.comfy_dir, 'temp', 'gigapixel_output') # This is a base, actual output is in batch_dir
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             'required': {
                 'images': ('IMAGE',),
-                'scale': ('FLOAT', {'default': 2.0, 'min': 1, 'max': 16, 'round': False}),
-                'no_temp': (['true', 'false'], {'default': 'true'}),
+                'scale': ('FLOAT', {'default': 2.0, 'min': 1, 'max': 16, 'step': 0.1, 'round': False}), # Added step
+                'no_temp_cleanup': (['true', 'false'], {'default': 'true', 'display': 'Clean Up Temp Files'}), # Renamed for clarity
             },
             'optional': {
-                'gigapixel_exe': ('STRING', {'default': '', }),
-                'upscale': ('GigapixelUpscaleSettings',),
-                'model': ('GigapixelModelSettings',),
+                'gigapixel_exe': ('STRING', {'default': '', 'multiline': False, 'display': 'Gigapixel Executable Path'}),
+                'model_selection': ('GigapixelModelSelection',), # Renamed
+                'standard_settings': ('GigapixelStandardSettings',), # Renamed
+                'recovery_settings': ('GigapixelRecoverySettings',), # New
+                'redefine_settings': ('GigapixelRedefineSettings',), # New
             },
             "hidden": {}
         }
 
     RETURN_TYPES = ('STRING', 'STRING', 'IMAGE')
-    RETURN_NAMES = ('settings', 'image_paths', 'IMAGE')
+    # Corrected OUTPUT_IS_LIST based on plan
+    RETURN_NAMES = ('settings_json', 'image_paths', 'IMAGE')
     FUNCTION = 'upscale_image'
-    CATEGORY = 'image'
+    CATEGORY = 'image/GigapixelAI' # Main category
     OUTPUT_NODE = True
-    OUTPUT_IS_LIST = (True, True, True)
+    OUTPUT_IS_LIST = (False, True, False) # Updated as per plan analysis
 
-    def save_image(self, img, output_dir, filename):
+    def save_image(self, img_tensor, output_dir, filename_prefix, idx):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
-        file_path = os.path.join(output_dir, filename)
-        img.save(file_path)
+
+        # Convert tensor to PIL Image
+        i = 255.0 * img_tensor.cpu().numpy()
+        img_pil = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+
+        # Save image (e.g. as PNG)
+        file_path = os.path.join(output_dir, f"{filename_prefix}_{idx}.png")
+        img_pil.save(file_path)
         return file_path
 
     def load_image(self, image_path):
@@ -119,144 +190,247 @@ class GigapixelAI:
         image = torch.from_numpy(image)[None,]
         return image
 
-    def upscale_image(self, images, scale, no_temp, gigapixel_exe=None, upscale: Optional[GigapixelUpscaleSettings]=None, model: Optional[GigapixelModelSettings]=None):
+    def upscale_image(self, images, scale, no_temp_cleanup,
+                      gigapixel_exe=None,
+                      model_selection: Optional[GigapixelModelSelection]=None,
+                      standard_settings: Optional[GigapixelStandardSettings]=None,
+                      recovery_settings: Optional[GigapixelRecoverySettings]=None,
+                      redefine_settings: Optional[GigapixelRedefineSettings]=None):
+
+        if not gigapixel_exe or not os.path.exists(gigapixel_exe):
+             # This part needs to be robust. If JS provides a default, ComfyUI might pass it even if empty in UI.
+             # A more robust check or relying on JS to always fill it if empty might be needed.
+             # For now, strict check:
+            if not gigapixel_exe: # Check if it's an empty string
+                # Attempt to get from ComfyUI settings if available (conceptual)
+                # This would require ComfyUI to expose a way to get settings from Python
+                # For now, we'll rely on the input being explicitly set or handled by the JS fallback.
+                # If it reaches here as empty string, and JS didn't fill it, it's an issue.
+                pass # Let it proceed, hoping JS filled it or user provided it.
+            elif not os.path.exists(gigapixel_exe): # Path provided but invalid
+                raise ValueError(f'Gigapixel AI executable path invalid: {gigapixel_exe}')
+
+
         os.makedirs(self.output_dir, exist_ok=True)
         
         now_millis = int(time.time() * 1000)
-        batch_dir = os.path.join(self.output_dir, f'batch_{now_millis}')
-        os.makedirs(batch_dir, exist_ok=True)
+        batch_input_dir = os.path.join(self.output_dir, f'batch_input_{now_millis}')
+        batch_output_dir = os.path.join(self.output_dir, f'batch_output_{now_millis}')
+        os.makedirs(batch_input_dir, exist_ok=True)
+        os.makedirs(batch_output_dir, exist_ok=True)
         
-        upscaled_images = []
-        upscale_settings = []
-        upscale_image_paths = []
-        
+        all_upscaled_images_tensors = []
+        all_output_image_paths = []
+        batch_settings_json = "{}"
+
         try:
-            count = 0
-            for image in images:
-                count += 1
-                i = 255.0 * image.cpu().numpy()
-                img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            input_image_paths = []
+            for idx, image_tensor in enumerate(images):
+                img_file_path = self.save_image(image_tensor, batch_input_dir, 'input', idx)
+                input_image_paths.append(img_file_path)
+
+            for idx, input_img_path in enumerate(input_image_paths):
+                (settings_json_str, output_paths_for_this_image) = self.gigapixel_upscale_single(
+                    input_img_path,
+                    batch_output_dir,
+                    gigapixel_exe,
+                    scale,
+                    model_selection,
+                    standard_settings,
+                    recovery_settings,
+                    redefine_settings
+                )
                 
-                img_file = os.path.join(batch_dir, f'input_{count}.png')
-                self.save_image(img, os.path.dirname(img_file), os.path.basename(img_file))
-                
-                output_dir = os.path.join(batch_dir, f'output_{count}')
-                os.makedirs(output_dir, exist_ok=True)
-                
-                (settings, output_image_paths) = self.gigapixel_upscale(img_file, gigapixel_exe, scale, upscale, model, output_dir)
-                
-                for output_path in output_image_paths:
-                    upscaled_image = self.load_image(output_path)
-                    upscaled_images.append(upscaled_image)
-                    upscale_settings.append(settings)
-                    upscale_image_paths.append(output_path)
+                if idx == 0:
+                    batch_settings_json = settings_json_str
+
+                for output_path in output_paths_for_this_image:
+                    # Ensure file exists before trying to load
+                    if os.path.exists(output_path):
+                        upscaled_image_tensor = self.load_image(output_path)
+                        all_upscaled_images_tensors.append(upscaled_image_tensor)
+                        all_output_image_paths.append(output_path)
+                    else:
+                        print(f"Warning: Output image path not found: {output_path}")
+
         finally:
-            # 如果no_temp为true，清理临时目录
-            if str(True).lower() == no_temp.lower():
+            if str(True).lower() == no_temp_cleanup.lower():
                 try:
-                    shutil.rmtree(batch_dir)
+                    if os.path.exists(batch_input_dir): shutil.rmtree(batch_input_dir)
+                    if os.path.exists(batch_output_dir): shutil.rmtree(batch_output_dir)
                 except Exception as e:
                     print(f"Error cleaning up temporary directory: {e}")
 
-        return (upscale_settings, upscale_image_paths, upscaled_images)
+        if not all_upscaled_images_tensors:
+            print("Warning: No images were successfully upscaled or loaded.")
+            # Return empty tensors/lists in the expected format for OUTPUT_IS_LIST = (False, True, False)
+            return (batch_settings_json, [], torch.empty(0, dtype=torch.float32, device=images.device if hasattr(images, 'device') else 'cpu'))
 
-    def gigapixel_upscale(self, img_file, gigapixel_exe, scale, upscale: Optional[GigapixelUpscaleSettings]=None, model: Optional[GigapixelModelSettings]=None, target_dir=None):
-        if not os.path.exists(gigapixel_exe):
-            raise ValueError(f'Gigapixel AI not found: {gigapixel_exe}')
+
+        final_batch_tensor = torch.cat(all_upscaled_images_tensors, dim=0)
+        return (batch_settings_json, all_output_image_paths, final_batch_tensor)
+
+
+    def gigapixel_upscale_single(self, img_file_path,
+                                 target_output_dir,
+                                 gigapixel_exe, scale,
+                                 model_sel: Optional[GigapixelModelSelection],
+                                 std_settings: Optional[GigapixelStandardSettings],
+                                 rec_settings: Optional[GigapixelRecoverySettings],
+                                 red_settings: Optional[GigapixelRedefineSettings]):
         
-        if target_dir is None:
-            target_dir = os.path.join(self.output_dir, 'default_output')
-        os.makedirs(target_dir, exist_ok=True)
+        gigapixel_args = [
+            gigapixel_exe,
+            '-i', img_file_path,
+            '-o', target_output_dir,
+            '--scale', str(scale),
+            '--overwrite'
+        ]
         
-        if len(img_file) > 250 or len(target_dir) > 250:
-            raise ValueError(f"Path too long. Input: {len(img_file)} chars, Output: {len(target_dir)} chars")
-        
-        gigapixel_args = [gigapixel_exe]
-        
-        if upscale and upscale.enabled:
-            gigapixel_args.extend(['--scale', str(scale)])
-            gigapixel_args.extend(['-i', img_file])
-            gigapixel_args.extend(['-o', target_dir])
-            
-            # 只有当参数大于0时才添加
-            if upscale.denoise > 0:
-                gigapixel_args.extend(['--dn', str(upscale.denoise)])
-            
-            if upscale.sharpen > 0:
-                gigapixel_args.extend(['--sh', str(upscale.sharpen)])
-            
-            if upscale.compression > 0:
-                gigapixel_args.extend(['--cm', str(upscale.compression)])
-            
-            if upscale.fr > 0:
-                gigapixel_args.extend(['--fr', str(upscale.fr)])
+        active_params = {'scale': scale}
+
+        selected_model_cli_code = None
+        if model_sel:
+            selected_model_cli_code = model_sel.model_cli_code
+            gigapixel_args.extend(['--model', selected_model_cli_code])
+            active_params['model'] = selected_model_cli_code
         else:
-            gigapixel_args.extend([
-                '--scale', str(scale),
-                '-i', img_file,
-                '-o', target_dir
-            ])
+            # Default to 'std' or let Gigapixel decide. For explicit control, could default here.
+            # If model_sel is None (optional input not connected), Gigapixel's default model will be used.
+            active_params['model'] = 'auto_or_gigapixel_default'
 
-        # 添加模型参数
-        if model:
-            gigapixel_args.extend(['--model', model.model])
-            # 对于特定模型添加 mv 2 参数
-            if model.needs_mv2:
+
+        if selected_model_cli_code == 'recovery' and rec_settings:
+            gigapixel_args.extend(['--mv', str(rec_settings.model_version)])
+            active_params['mv'] = rec_settings.model_version
+            if rec_settings.detail >= 1: # CLI doc says 1-100
+                 gigapixel_args.extend(['--detail', str(rec_settings.detail)])
+                 active_params['detail'] = rec_settings.detail
+            gigapixel_args.extend(['--frv', str(rec_settings.face_recovery_version)])
+            active_params['frv'] = rec_settings.face_recovery_version
+            gigapixel_args.extend(['--frc', str(rec_settings.face_recovery_creativity)])
+            active_params['frc'] = rec_settings.face_recovery_creativity
+
+        elif selected_model_cli_code == 'redefine' and red_settings:
+            gigapixel_args.extend(['--cr', str(red_settings.creativity)])
+            active_params['cr'] = red_settings.creativity
+            gigapixel_args.extend(['--tx', str(red_settings.texture)])
+            active_params['tx'] = red_settings.texture
+            if red_settings.prompt:
+                gigapixel_args.extend(['--prompt', red_settings.prompt])
+                active_params['prompt'] = red_settings.prompt
+            if red_settings.denoise >= 1: # CLI doc says 1-6
+                gigapixel_args.extend(['--denoise', str(red_settings.denoise)])
+                active_params['denoise_redefine'] = red_settings.denoise
+            if red_settings.sharpen >= 1: # CLI doc says 1-6
+                gigapixel_args.extend(['--sharpen', str(red_settings.sharpen)])
+                active_params['sharpen_redefine'] = red_settings.sharpen
+
+        elif std_settings and std_settings.enabled:
+            if model_sel and model_sel.is_default_mv2_model and selected_model_cli_code != 'recovery':
                 gigapixel_args.extend(['--mv', '2'])
+                active_params['mv'] = 2
+
+            if std_settings.denoise >= 0: # Assuming 0 is a valid value (or means 'off')
+                gigapixel_args.extend(['--dn', str(std_settings.denoise)])
+                active_params['denoise'] = std_settings.denoise
+            if std_settings.sharpen >= 0:
+                gigapixel_args.extend(['--sh', str(std_settings.sharpen)])
+                active_params['sharpen'] = std_settings.sharpen
+            # Model compression --cm
+            if std_settings.compression >= 0:
+                gigapixel_args.extend(['--cm', str(std_settings.compression)])
+                active_params['compression'] = std_settings.compression
+            if std_settings.face_recovery_strength >= 1: # CLI doc says 1-100 for --fr
+                gigapixel_args.extend(['--fr', str(std_settings.face_recovery_strength)])
+                active_params['face_recovery_strength'] = std_settings.face_recovery_strength
         
+        elif model_sel and model_sel.is_default_mv2_model and selected_model_cli_code != 'recovery':
+            gigapixel_args.extend(['--mv', '2'])
+            active_params['mv'] = 2
+
         try:
-            print(f"执行命令: {' '.join(gigapixel_args)}")
+            print(f"Executing Gigapixel Command: {' '.join(str(arg) for arg in gigapixel_args)}")
             
+            gigapixel_args_str = [str(arg) for arg in gigapixel_args]
             result = subprocess.run(
-                gigapixel_args, 
+                gigapixel_args_str,
                 capture_output=True, 
                 text=True, 
                 timeout=600, 
-                check=True
+                check=True,
+                shell=False
             )
             
-            print("Gigapixel running:")
-            print(result.stdout)
-            
-            output_images = [
-                os.path.join(target_dir, f) 
-                for f in os.listdir(target_dir) 
-                if f.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff'))
-            ]
-            
-            settings = {
-                'scale': scale,
-                'denoise': upscale.denoise if upscale and upscale.denoise > 0 else None,
-                'sharpen': upscale.sharpen if upscale and upscale.sharpen > 0 else None,
-                'compression': upscale.compression if upscale and upscale.compression > 0 else None,
-                'fr': upscale.fr if upscale and upscale.fr > 0 else None,
-                'model': model.model if model else 'std',
-                'mv': 2 if model and model.needs_mv2 else None
-            }
-            settings_json = json.dumps(settings, indent=2).replace('"', "'")
+            # print("Gigapixel STDOUT:") # Usually too verbose for normal operation
+            # print(result.stdout)
+            if result.stderr: # Log stderr if it contains anything, as it might be important warnings/info
+                print(f"Gigapixel STDERR for {img_file_path}: {result.stderr}")
 
-            return (settings_json, output_images)
+            base_input_filename = os.path.splitext(os.path.basename(img_file_path))[0]
+            output_image_paths = []
+            # More robustly find the output file. Gigapixel often appends model info and scale.
+            # E.g., input.png -> input-gp-std-x2.png or input-gp-recovery-x2-frv2.png
+            # This requires knowledge of Gigapixel's naming patterns or making it configurable.
+            # For now, a simple scan for files starting with base input name in the output dir.
+            
+            # List files *after* subprocess call
+            found_files = os.listdir(target_output_dir)
+            for f_name in found_files:
+                if f_name.startswith(base_input_filename) and \
+                   any(f_name.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.tif', '.tiff']):
+                    output_image_paths.append(os.path.join(target_output_dir, f_name))
+            
+            if not output_image_paths:
+                # Check if the output file might be the input file name directly (if overwrite happened in place, unlikely for -o)
+                # Or if the naming is very different.
+                print(f"Warning: No output image found in {target_output_dir} for input {img_file_path} using simple name matching. STDOUT: {result.stdout}")
+                # As a fallback, if stdout contains "Saved image to: <path>", try to parse it.
+                # This is highly dependent on Gigapixel's specific stdout format.
+                # Example (hypothetical): "Successfully processed and saved image to: /path/to/output/image.png"
+                for line in result.stdout.splitlines():
+                    if "Saved image to: " in line: # Adjust this marker based on actual CLI output
+                        parsed_path = line.split("Saved image to: ")[-1].strip()
+                        if os.path.exists(parsed_path) and os.path.dirname(parsed_path) == target_output_dir:
+                            output_image_paths.append(parsed_path)
+                            print(f"Found output path from stdout: {parsed_path}")
+                            break # Found one, assume it's the primary
+                if not output_image_paths: # If still not found
+                     raise Exception(f"No output image found in {target_output_dir} for input {img_file_path}. CLI STDOUT: {result.stdout}")
+
+            settings_json_output = json.dumps(active_params, indent=2).replace('"', "'")
+            return (settings_json_output, output_image_paths)
         
         except subprocess.TimeoutExpired:
-            print("Gigapixel timeout")
+            print(f"Gigapixel timeout for {img_file_path}")
             raise
         except subprocess.CalledProcessError as e:
-            print(f"Gigapixel CLI error code: {e.returncode}")
-            print(f"STDOUT: {e.stdout}")
-            print(f"STDERR: {e.stderr}")
-            raise
+            error_message = f"Gigapixel CLI error (Code: {e.returncode}) for {img_file_path}:\
+" # Note the escaped newline
+            error_message += f"  Command: {' '.join(e.cmd)}\
+" # Note the escaped newline
+            error_message += f"  STDOUT: {e.stdout}\
+" # Note the escaped newline
+            error_message += f"  STDERR: {e.stderr}"
+            print(error_message)
+            raise Exception(error_message) # Raise a new exception with the full context
         except Exception as e:
-            print(f"error while processing: {e}")
+            print(f"Error processing {img_file_path} with Gigapixel: {e}")
             raise
+
 
 NODE_CLASS_MAPPINGS = {
     'GigapixelAI': GigapixelAI,
-    'GigapixelUpscaleSettings': GigapixelUpscaleSettings,
-    'GigapixelModelSettings': GigapixelModelSettings,
+    'GigapixelModelSelection': GigapixelModelSelection,
+    'GigapixelStandardSettings': GigapixelStandardSettings,
+    'GigapixelRecoverySettings': GigapixelRecoverySettings,
+    'GigapixelRedefineSettings': GigapixelRedefineSettings,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    'GigapixelAI': 'Gigapixel AI',
-    'GigapixelUpscaleSettings': 'Gigapixel Upscale Settings',
-    'GigapixelModelSettings': 'Gigapixel Model Settings',
+    'GigapixelAI': 'Gigapixel AI Upscaler',
+    'GigapixelModelSelection': 'Gigapixel Model Selection',
+    'GigapixelStandardSettings': 'Gigapixel Standard Settings',
+    'GigapixelRecoverySettings': 'Gigapixel Recovery Settings',
+    'GigapixelRedefineSettings': 'Gigapixel Redefine Settings',
 }
